@@ -383,8 +383,6 @@ public final class JMail {
           return EmailValidationResult.failure(FailureReason.INVALID_QUOTE_LOCATION);
         }
 
-        // If we are not in quotes, and this character is not the quote, make sure the
-        // character is allowed
         boolean mustBeQuoted = JMail.DISALLOWED_UNQUOTED_CHARACTERS.contains(c);
 
         if (c != '"' && !inQuotes && !previousBackslash && mustBeQuoted) {
@@ -394,6 +392,34 @@ public final class JMail {
         // If we are in quotes and the character requires quotes, mark the pair as not removable
         if (mustBeQuoted && inQuotes && !previousBackslash && c != '"') {
           removableQuotePair = false;
+        }
+
+        // RFC 6531 Section 3.3 and RFC 5321 Section 4.1.2 specify that internationalized
+        // email addresses (EAI) can contain UTF-8 characters in the local-part, but only
+        // certain character classes are valid. According to RFC 6531, the local-part should
+        // consist of "atext" (RFC 5322 Section 3.2.3) or UTF-8 characters that are letters,
+        // marks, or numbers.
+        //
+        // While RFC 6531 allows UTF-8, it doesn't permit arbitrary Unicode symbols and
+        // punctuation marks in unquoted local-parts. Characters like • (BULLET U+2022),
+        // ★ (BLACK STAR U+2605), © (COPYRIGHT U+00A9), etc. are categorized as punctuation
+        // or symbols in Unicode, not letters/marks, and should not be allowed in unquoted
+        // local-parts as they can cause interoperability issues with SMTP servers.
+        //
+        // This validation applies ONLY to the local-part (before @), not the domain.
+        // The domain has separate validation via IDN (Internationalized Domain Names).
+        if (c >= 128 && !inQuotes && !previousBackslash) {
+          byte type = (byte) Character.getType(c);
+
+          // Reject Unicode character categories that represent symbols and punctuation.
+          // Allow: Letters (Lu, Ll, Lt, Lm, Lo), Marks (Mn, Mc, Me), Numbers (Nd, Nl, No)
+          // Reject: Punctuation (Pc, Pd, Ps, Pe, Pi, Pf, Po) and Symbols (Sm, Sc, Sk, So)
+          //
+          // This ensures compatibility with SMTP servers while supporting genuine
+          // internationalized names (e.g., Pelé, 山田, Владимир).
+          if (JMail.DISALLOWED_UNQUOTED_CHARACTER_TYPES.contains(type)) {
+            return EmailValidationResult.failure(FailureReason.DISALLOWED_UNQUOTED_CHARACTER);
+          }
         }
 
         // If we previously saw a backslash, we must make sure it is being used to quote something
@@ -754,6 +780,23 @@ public final class JMail {
           // Control characters 1-8, 11, 12, 14-31
           '␁', '␂', '␃', '␄', '␅', '␆', '␇', '␈', '␋', '␌', '␎', '␏', '␐', '␑',
           '␒', '␓', '␔', '␕', '␖', '␗', '␘', '␙', '␚', '␛', '␜', '␝', '␟', '␁'));
+
+  // Set of character types that are not allowed in the local-part outside of quotes
+  // See all Unicode character categories here: https://www.compart.com/en/unicode/category
+  private static final Set<Byte> DISALLOWED_UNQUOTED_CHARACTER_TYPES = new HashSet<>(
+      Arrays.asList(
+          Character.CONNECTOR_PUNCTUATION,     // Pc: _ (underscore is ASCII)
+          Character.DASH_PUNCTUATION,          // Pd: - (dash) and variants
+          Character.START_PUNCTUATION,         // Ps: ( [ { etc.
+          Character.END_PUNCTUATION,           // Pe: ) ] } etc.
+          Character.INITIAL_QUOTE_PUNCTUATION, // Pi: « ' etc.
+          Character.FINAL_QUOTE_PUNCTUATION,   // Pf: » ' etc.
+          Character.OTHER_PUNCTUATION,         // Po: ! • ★ etc.
+          Character.MATH_SYMBOL,               // Sm: + = × etc.
+          Character.CURRENCY_SYMBOL,           // Sc: $ € £ etc.
+          Character.MODIFIER_SYMBOL,           // Sk: ^ ` etc.
+          Character.OTHER_SYMBOL               // So: © ® ™ etc.
+      ));
 
   // Set of characters that are allowed in the domain
   private static final Set<Character> ALLOWED_DOMAIN_CHARACTERS = new HashSet<>(
